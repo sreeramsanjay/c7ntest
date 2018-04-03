@@ -1,0 +1,11 @@
+accounts:
+- account_id: '788934978979'
+  name: awstrainings
+  regions:
+  - us-east-1
+  role: arn:aws:iam::788934978979:role/c7n_crossacct_assume_role
+  tags:
+  - type:dev
+  - division:itops
+  - partition:us
+  - scope:normal

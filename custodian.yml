@@ -1,0 +1,62 @@
+policies:
+  - name: password-policy-validation
+    resource: account
+    region: us-east-1
+    filters:
+      - or:
+        - type: password-policy
+          key: MinimumPasswordLength
+          value: 12
+          op: less-than
+        - type: password-policy
+          key: RequireSymbols
+          value: false
+        - type: password-policy
+          key: AllowUsersToChangePassword
+          value: false
+        - type: password-policy
+          key: PasswordPolicyConfigured
+          value: false
+        - type: password-policy
+          key: RequireUppercaseCharacters
+          value: false
+        - type: password-policy
+          key: RequireLowercaseCharacters
+          value: false
+        - type: password-policy
+          key: RequireNumbers
+          value: false
+        - type: password-policy
+          key: ExpirePasswords
+          value: false
+        - type: password-policy
+          key: PasswordReusePrevention
+          value: 5
+          op: less-than
+        - type: password-policy
+          key: MaxPasswordAge
+          value: 120
+          op: less-than
+  - name: account-cloudtrail-status
+    resource: account
+    region: us-east-1
+    filters:
+      - type: check-cloudtrail
+        global-events: true
+        multi-region: true
+        running: true
+  - name: account-check-config-services
+    resource: account
+    region: us-east-1
+    filters:
+      - type: check-config
+        all-resources: true
+        global-resources: false
+        running: true
+  - name: root-no-mfa
+    resource: account
+    filters:
+      - type: iam-summary
+        key: AccountMFAEnabled
+        value: true
+        op: ne
