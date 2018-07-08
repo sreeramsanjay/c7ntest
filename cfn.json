@@ -1,0 +1,333 @@
+{
+	"AWSTemplateFormatVersion": "2010-09-09",
+	"Description": "This cfn will create necessary aws resources to run cloud custodian",
+	"Parameters": {
+		"c7ncodecommitrepo": {
+			"Description": "c7n codecommit https clone url",
+			"Type": "String"
+		},
+		"MyBucketName": {
+			"Description": "Name for the CodeCommit repository that will store the CloudFormation templates",
+			"Type": "String",
+			"MinLength": 3,
+			"MaxLength": 63,
+			"AllowedPattern": "[a-z][a-z0-9.-]*"
+		},
+		"MyLambdaFunctionName": {
+			"Description": "Name for the Lambda function that will trigger the CloudBuild project",
+			"Type": "String",
+			"MinLength": 3,
+			"MaxLength": 63,
+			"AllowedPattern": "[a-zA-Z][a-zA-Z0-9.-]*"
+		},
+		"MyCodeBuildProjectName": {
+			"Description": "Name for the CodeCommit repository that will store the CloudFormation templates",
+			"Type": "String",
+			"MinLength": 2,
+			"MaxLength": 255,
+			"AllowedPattern": "[a-zA-Z][a-zA-Z0-9_-]*"
+		}
+	},
+	"Resources": {
+		"c7nSqs": {
+			"Properties": {
+				"QueueName": "c7n-incidents"
+			},
+			"Type": "AWS::SQS::Queue"
+		},
+		"c7nSNSTopic": {
+			"Type": "AWS::SNS::Topic",
+			"Properties": {
+				"TopicName": "c7n_notifications"
+			}
+		},
+		"c7nBucket": {
+			"Type": "AWS::S3::Bucket",
+			"Properties": {
+				"BucketName": {
+					"Ref": "MyBucketName"
+				}
+			}
+		},
+		"c7nProject": {
+			"Type": "AWS::CodeBuild::Project",
+			"Properties": {
+				"Artifacts": {
+					"Type": "NO_ARTIFACTS"
+				},
+				"Description": "Cloud Custodian Job",
+				"Environment": {
+					"ComputeType": "BUILD_GENERAL1_SMALL",
+					"Image": "amazonlinux",
+					"Type": "LINUX_CONTAINER"
+				},
+				"Name": {
+					"Ref": "MyCodeBuildProjectName"
+				},
+				"ServiceRole": {
+					"Ref": "c7nCodeBuildRole"
+				},
+				"Source": {
+					"Type": "CODECOMMIT",
+					"Location": {
+						"Ref": "c7ncodecommitrepo"
+					}
+				},
+				"TimeoutInMinutes": 60
+			}
+		},
+		"c7nLambda": {
+			"Type": "AWS::Lambda::Function",
+			"Properties": {
+				"FunctionName": {
+					"Ref": "MyLambdaFunctionName"
+				},
+				"Code": {
+					"ZipFile": "import json\nimport boto3\nimport os\n\nclient = boto3.client('codebuild')\n\ndef lambda_handler(event, context):\n  response = client.start_build(\n    projectName=os.environ['project_name']\n  )\n  return \"Build triggered\"\n"
+				},
+				"Description": "Lambda function to kick off Cloud Custodian CodeBuild project",
+				"Environment": {
+					"Variables": {
+						"project_name": {
+							"Ref": "c7nProject"
+						}
+					}
+				},
+				"Handler": "index.lambda_handler",
+				"Role": {
+					"Fn::GetAtt": ["c7nLambdaRole", "Arn"]
+				},
+				"Runtime": "python2.7",
+				"Timeout": 60
+			}
+
+		},
+		"ScheduledRule": {
+			"Type": "AWS::Events::Rule",
+			"Properties": {
+				"Description": "ScheduledRule",
+				"ScheduleExpression": "cron(0 0 * * ? *)",
+				"State": "ENABLED",
+				"Targets": [{
+					"Arn": {
+						"Fn::GetAtt": ["c7nLambda", "Arn"]
+					},
+					"Id": "TargetFunctionV1"
+				}]
+			}
+		},
+		"PermissionForEventsToInvokeLambda": {
+			"Type": "AWS::Lambda::Permission",
+			"Properties": {
+				"FunctionName": {
+					"Ref": "c7nLambda"
+				},
+				"Action": "lambda:InvokeFunction",
+				"Principal": "events.amazonaws.com",
+				"SourceArn": {
+					"Fn::GetAtt": ["ScheduledRule", "Arn"]
+				}
+			}
+		},
+		"c7nLambdaRole": {
+			"Type": "AWS::IAM::Role",
+			"Properties": {
+				"AssumeRolePolicyDocument": {
+					"Version": "2012-10-17",
+					"Statement": [{
+						"Effect": "Allow",
+						"Principal": {
+							"Service": [
+								"lambda.amazonaws.com"
+							]
+						},
+						"Action": [
+							"sts:AssumeRole"
+						]
+					}]
+				},
+				"Path": "/"
+			}
+		},
+		"c7nCodeBuildRole": {
+			"Type": "AWS::IAM::Role",
+			"Properties": {
+				"AssumeRolePolicyDocument": {
+					"Version": "2012-10-17",
+					"Statement": [{
+						"Effect": "Allow",
+						"Principal": {
+							"Service": [
+								"codebuild.amazonaws.com"
+							]
+						},
+						"Action": [
+							"sts:AssumeRole"
+						]
+					}]
+				},
+				"ManagedPolicyArns": ["arn:aws:iam::aws:policy/ReadOnlyAccess"],
+				"Path": "/"
+			}
+		},
+		"c7nCodeBuildRolePolicy": {
+			"Type": "AWS::IAM::ManagedPolicy",
+			"Properties": {
+				"Description": "IAM policy for c7n codebuild role",
+				"Path": "/",
+				"PolicyDocument": {
+					"Version": "2012-10-17",
+					"Statement": [{
+							"Effect": "Allow",
+							"Action": [
+								"logs:CreateLogGroup",
+								"logs:CreateLogStream",
+								"logs:PutLogEvents",
+								"s3:ListAllMyBuckets",
+								"s3:ListBucket",
+								"sqs:GetQueueAttributes",
+								"sqs:ListQueues"
+							],
+							"Resource": "*"
+						},
+						{
+							"Effect": "Allow",
+							"Action": [
+								"sqs:*"
+							],
+							"Resource": {
+								"Fn::GetAtt": ["c7nSqs", "Arn"]
+							}
+						},
+						{
+							"Action": [
+								"s3:PutObject",
+								"s3:PutObjectAcl",
+								"s3:PutObjectTagging",
+								"s3:PutObjectVersionAcl",
+								"s3:PutObjectVersionTagging"
+							],
+							"Effect": "Allow",
+							"Resource": {
+								"Fn::Join": ["", [{
+									"Fn::GetAtt": ["c7nBucket", "Arn"]
+								}, "/*"]]
+							}
+						}
+					]
+				},
+				"Roles": [{
+					"Ref": "c7nCodeBuildRole"
+				}],
+				"ManagedPolicyName": "c7n_codebuild_role_policy"
+			}
+		},
+		"c7nLambdaRolePolicy": {
+			"Type": "AWS::IAM::ManagedPolicy",
+			"Properties": {
+				"Description": "IAM policy for c7n lambda role",
+				"Path": "/",
+				"PolicyDocument": {
+					"Version": "2012-10-17",
+					"Statement": [{
+							"Effect": "Allow",
+							"Action": [
+								"logs:CreateLogGroup",
+								"logs:CreateLogStream",
+								"logs:PutLogEvents"
+							],
+							"Resource": "*"
+						},
+						{
+							"Effect": "Allow",
+							"Action": [
+								"sqs:ChangeMessageVisibility",
+								"sqs:ChangeMessageVisibilityBatch",
+								"sqs:DeleteMessage",
+								"sqs:DeleteMessageBatch",
+								"sqs:GetQueueAttributes",
+								"sqs:GetQueueUrl",
+								"sqs:ListDeadLetterSourceQueues",
+								"sqs:ListQueues",
+								"sqs:ReceiveMessage"
+							],
+							"Resource": {
+								"Fn::GetAtt": ["c7nSqs", "Arn"]
+							}
+						},
+						{
+							"Effect": "Allow",
+							"Action": [
+								"sns:ListTopics",
+								"sns:Publish"
+							],
+							"Resource": {
+								"Ref": "c7nSNSTopic"
+							}
+						},
+						{
+							"Effect": "Allow",
+							"Action": [
+								"codebuild:StartBuild"
+							],
+							"Resource": {
+								"Fn::GetAtt": ["c7nProject", "Arn"]
+							}
+						}
+					]
+				},
+				"Roles": [{
+					"Ref": "c7nLambdaRole"
+				}],
+				"ManagedPolicyName": "c7n_lambda_role_policy"
+			}
+		},
+		"c7nAssumeRolePolicy": {
+			"Type": "AWS::IAM::ManagedPolicy",
+			"Properties": {
+				"Description": "IAM policy for c7n lambda role",
+				"Path": "/",
+				"PolicyDocument": {
+					"Version": "2012-10-17",
+					"Statement": [{
+						"Effect": "Allow",
+						"Action": "sts:AssumeRole",
+						"Resource": [{
+								"Fn::GetAtt": ["c7nCodeBuildRole", "Arn"]
+							},
+							"arn:aws:iam::XXXXXXXXXXXXXXX:role/c7n_crossacct_assume_role"
+
+						]
+					}]
+				},
+				"Roles": [{
+					"Ref": "c7nCodeBuildRole"
+				}],
+				"ManagedPolicyName": "c7n_crossacct_assume_role_policy"
+			}
+		}
+	},
+	"Outputs": {
+		"QueueARN": {
+			"Description": "The ARN of the queue",
+			"Value": {
+				"Fn::GetAtt": [
+					"c7nSqs",
+					"Arn"
+				]
+			}
+		},
+		"c7nBucketName": {
+			"Description": "S3 bucket to store custodian logs",
+			"Value": {
+				"Ref": "c7nBucket"
+			}
+		},
+		"c7nSNSTopicArn": {
+			"Description": "c7n SNS notification topic Arn",
+			"Value": {
+				"Ref": "c7nSNSTopic"
+			}
+		}
+	}
+}
